@@ -4,6 +4,8 @@ import requests
 import re
 import nltk
 import datetime
+import functools
+import os
 
 
 class Post:
@@ -53,10 +55,13 @@ class Post:
             return False
 
 
-def logger_parametrized_decorator(filename='log.txt'):
-    def logger_decorator(function_to_decorate):
+def logged(path='log.txt'):
+    def decorator(function_to_decorate):
+        @functools.wraps(function_to_decorate)
         def wrapper(*args, **kwargs):
-            with open(filename, 'a', encoding='utf-8') as log_file:
+            if not os.path.exists(path):
+                os.mkdir(path=path)
+            with open(os.path.join(path, 'log.txt'), 'a', encoding='utf-8') as log_file:
                 log_file.writelines(f'Time: {datetime.datetime.now().strftime("%Y %d %b %H:%M:%S")}\n')
                 log_file.writelines(f'Function: {function_to_decorate.__name__}\n')
                 log_file.writelines(f'Arguments: {args}\n')
@@ -66,56 +71,62 @@ def logger_parametrized_decorator(filename='log.txt'):
                 log_file.writelines('____________________________________________________________\n')
             return result
         return wrapper
-    return logger_decorator
+    return decorator
 
-
-def timeout_parametrized_decorator(timeout = 0.1):
-    def timeout_decorator(function_to_decorate):
+def delayed(delay=0.1):
+    def decorator(function_to_decorate):
+        @functools.wraps(function_to_decorate)
         def wrapper(*args, **kwargs):
-            result = function_to_decorate(*args, **kwargs)
-            time.sleep(timeout)
-            return result
+            time.sleep(delay)
+            return function_to_decorate(*args, **kwargs)
         return wrapper
-    return timeout_decorator
+    return decorator
+
+def repeated(repeats=5):
+    def decorator(function_to_decorate):
+        @functools.wraps(function_to_decorate)
+        def wrapper(*args, **kwargs):
+            attempt = 1
+            while attempt <= repeats:
+                result = function_to_decorate(*args, **kwargs)
+                if result is not None:
+                    return result
+                attempt += 1
+            raise ValueError
+        return wrapper
+    return decorator
 
 
-def check_status_decorator(function_to_decorate):
-    def wrapper(*args, **kwargs):
-        attempt = 0
-        while attempt <= 5:
-            result = function_to_decorate(*args, **kwargs)
-            attempt += 1;
-        return result
-    return wrapper
-
-
-@timeout_parametrized_decorator
-@check_status_decorator
-@logger_parametrized_decorator
+@repeated(repeats=3)
+@delayed(delay=0.5)
+@logged(path='logs')
 def get_request(url):
     response = requests.get(url)
-    return response
+    if response.status_code == 200:
+        return response.text
+    else:
+        print(f"Error {response.status_code}")
+        return None
 
 
-@logger_parametrized_decorator(filename='log.txt')
+@logged(path='logs')
 def intersection(checklist, words_available):
     return set(checklist).intersection(words_available)
 
 
-@logger_parametrized_decorator(filename='log.txt')
+@logged(path='logs')
 def levenstein(checklist, words_available):
     intersection = []
     levenstein_threshold = 0.2
     for question in words_available:
-        for replica in checklist:
-            distance_weighted = nltk.edit_distance(question, replica) / len(question)
-            if distance_weighted <= levenstein_threshold:
-                if replica not in intersection:
-                    intersection.append(replica)
+        intersection += [replica
+                         for replica in checklist
+                         if (nltk.edit_distance(question, replica) / len(question) <= levenstein_threshold)
+                         and (replica not in intersection)]
     return intersection
 
 
-@logger_parametrized_decorator(filename='log.txt')
+@logged(path='logs')
 def get_post_data(post, extended_content=True):
     p = Post()
     p.id = post.attrs.get('id')
@@ -123,12 +134,9 @@ def get_post_data(post, extended_content=True):
     p.title = post.find('h2', class_='tm-article-snippet__title_h2').text
     p.link = 'https://habr.com' + post.find('a', class_='tm-article-snippet__title-link').attrs.get('href')
     if extended_content:
-        response = requests.get(p.link)
-        if response.status_code != 200:
-            print(f"Error {response.status_code}")
-        else:
-            full_post = BeautifulSoup(response.text, "html.parser")
-            p.full_content = full_post.find('div', class_='article-formatted-body').text
+        response_text = get_request(p.link)
+        full_post = BeautifulSoup(response_text, "html.parser")
+        p.full_content = full_post.find('div', class_='article-formatted-body').text
     p.content = post.find('div', class_='article-formatted-body').text
     post_hubs = post.find_all('a', class_='tm-article-snippet__hubs-item-link')
     for hub in post_hubs:
@@ -138,14 +146,11 @@ def get_post_data(post, extended_content=True):
 
 if __name__ == '__main__':
     KEYWORDS = ['OVH', 'linux', 'фото', 'ERP-консалтинг', 'python', 'обучение', 'S7-300', 'VUI-команды']
+    url = "https://habr.com/ru/all/"
 
-    response = requests.get("https://habr.com/ru/all/")
-    if response.status_code != 200:
-        print(f"Error {response.status_code}")
-    else:
-        soup = BeautifulSoup(response.text, "html.parser")
-        posts = soup.find_all('article', class_='tm-articles-list__item')
-        for post in posts:
-            p = get_post_data(post, extended_content=False)
-            if p.find(KEYWORDS, levenstein, include_hubs=True, include_title=True, include_content=True):
-                print(p)
+    soup = BeautifulSoup(get_request(url), "html.parser")
+    posts = soup.find_all('article', class_='tm-articles-list__item')
+    for post in posts:
+        p = get_post_data(post, extended_content=False)
+        if p.find(KEYWORDS, levenstein, include_hubs=True, include_title=True, include_content=True):
+            print(p)
